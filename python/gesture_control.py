@@ -1,190 +1,272 @@
 
 import cv2
 import mediapipe as mp
-import time
-
-SERIAL_TEST_MODE = True
-last_sent_command = None
-last_sent_time = 0
-
+from pathlib import Path
+from collections import deque
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-print("Starting hand detection...")
+from robot_communication import RobotCommunication
 
-# Load the downloaded hand model
-model_path = "models/hand_landmarker.task"
 
-base_options = python.BaseOptions(
-    model_asset_path=model_path
+# ================= CONFIGURATION =================
+
+MODEL_PATH = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "hand_landmarker.task"
 )
 
-options = vision.HandLandmarkerOptions(
-    base_options=base_options,
-    num_hands=1,
-    min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+CAMERA_INDEX = 0
+ARDUINO_PORT = "COM5"
+BAUD_RATE = 9600
 
-detector = vision.HandLandmarker.create_from_options(options)
+STABLE_FRAMES = 5
 
-# Start webcam
-camera = cv2.VideoCapture(0)
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17)
+]
 
-while True:
-    success, frame = camera.read()
+COMMAND_CODES = {
+    "FORWARD": "F",
+    "BACKWARD": "B",
+    "LEFT": "L",
+    "RIGHT": "R",
+    "STOP": "S"
+}
 
-    if not success:
-        print("Could not access camera")
-        break
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+# ================= FINGER COUNTING =================
 
-    mp_image = mp.Image(
-        image_format=mp.ImageFormat.SRGB,
-        data=rgb_frame
+def count_fingers(landmarks):
+    fingers_up = 0
+
+    for tip, pip in zip(
+        [8, 12, 16, 20],
+        [6, 10, 14, 18]
+    ):
+        if landmarks[tip].y < landmarks[pip].y:
+            fingers_up += 1
+
+    # Thumb rule for mirrored webcam image
+    if landmarks[4].x < landmarks[3].x:
+        fingers_up += 1
+
+    return fingers_up
+
+
+# ================= GESTURE MAPPING =================
+
+def get_command(fingers_up):
+    commands = {
+        0: "STOP",
+        1: "BACKWARD",
+        2: "FORWARD",
+        3: "LEFT",
+        4: "RIGHT",
+        5: "STOP"
+    }
+
+    return commands.get(fingers_up, "STOP")
+
+
+# ================= DRAW LANDMARKS =================
+
+def draw_hand(frame, landmarks):
+    height, width, _ = frame.shape
+
+    points = [
+        (int(point.x * width), int(point.y * height))
+        for point in landmarks
+    ]
+
+    for start, end in HAND_CONNECTIONS:
+        cv2.line(
+            frame,
+            points[start],
+            points[end],
+            (0, 255, 0),
+            2
+        )
+
+    for x, y in points:
+        cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
+
+
+# ================= MAIN PROGRAM =================
+
+def main():
+    if not MODEL_PATH.exists():
+        print(f"ERROR: Model not found: {MODEL_PATH}")
+        return
+
+    options = vision.HandLandmarkerOptions(
+        base_options=python.BaseOptions(
+            model_asset_path=str(MODEL_PATH)
+        ),
+        running_mode=vision.RunningMode.IMAGE,
+        num_hands=1
     )
 
-    result = detector.detect(mp_image)
+    landmarker = vision.HandLandmarker.create_from_options(options)
+    camera = None
+    robot = RobotCommunication(
+        port=ARDUINO_PORT,
+        baud_rate=BAUD_RATE,
+        simulation=False
+    )
 
-    if result.hand_landmarks:
-        height, width, _ = frame.shape
-        cv2.putText(
-    frame,
-    "Hand Detected!",
-    (20, 50),
-    cv2.FONT_HERSHEY_SIMPLEX,
-    1,
-    (0, 255, 0),
-    2
-)
+    # Store recent candidate commands
+    recent_commands = deque(maxlen=STABLE_FRAMES)
+    active_command = "STOP"
 
-        for hand_landmarks in result.hand_landmarks:
-            fingers_up = 0
-            
-            
-            # Detect thumb using distance from its base
-            thumb_tip = hand_landmarks[4]
-            thumb_ip = hand_landmarks[3]
-            thumb_mcp = hand_landmarks[2]
-            index_mcp = hand_landmarks[5]
+    try:
+        if not robot.connect():
+            return
 
-            # Distance from thumb tip and joint to index-finger base
-            tip_distance = (
-                (thumb_tip.x - index_mcp.x) ** 2
-                + (thumb_tip.y - index_mcp.y) ** 2
-            ) ** 0.5
+        camera = cv2.VideoCapture(CAMERA_INDEX)
 
-            joint_distance = (
-                (thumb_ip.x - index_mcp.x) ** 2
-                + (thumb_ip.y - index_mcp.y) ** 2
-            ) ** 0.5
+        if not camera.isOpened():
+            print("ERROR: Could not open webcam.")
+            return
 
-            if tip_distance > joint_distance * 1.2:
-                
-                fingers_up += 1
+        print("Arduino connected on COM5.")
+        print("Gesture stability filtering enabled.")
+        print("Keep motors disconnected. Press Q to quit.")
 
-            
-          
+        while True:
+            success, frame = camera.read()
 
-            
-            # Count the other four fingers
-            finger_tips = [8, 12, 16, 20]
-            finger_pips = [6, 10, 14, 18]
+            if not success:
+                print("ERROR: Could not read webcam frame.")
+                break
 
-            for tip, pip in zip(finger_tips, finger_pips):
-                if hand_landmarks[tip].y < hand_landmarks[pip].y:
-                    fingers_up += 1
+            frame = cv2.flip(frame, 1)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Display finger count
-            cv2.putText(
-                frame,
-                f"Fingers: {fingers_up}",
-                (20, 90),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 0, 0),
-                2
-            ) 
-            
-            # Convert finger count into a robot command
-            
-            if fingers_up == 0 or fingers_up == 5:
-                command = "S"
-                command_name = "STOP"
-            elif fingers_up == 1:
-                command = "F"
-                command_name = "FORWARD"
-            elif fingers_up == 2:
-                command = "B"
-                command_name = "BACKWARD"
-            elif fingers_up == 3:
-                command = "L"
-                command_name = "LEFT"
-            elif fingers_up == 4:
-                command = "R"
-                command_name = "RIGHT"
-            else:
-                command = "S"
-                command_name = "STOP"
-
-                        # Software-only test: simulate sending commands
-            current_time = time.time()
-
-            if (
-                command != last_sent_command
-                or current_time - last_sent_time >= 1
-            ):
-                if SERIAL_TEST_MODE:
-                    print(f"Test command: {command} ({command_name})")
-
-                last_sent_command = command
-                last_sent_time = current_time
-
-            # Display the robot command
-            
-            cv2.putText(
-                frame,
-                f"Command: {command_name}",
-                (20, 140),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=rgb_frame
             )
-            # Draw green dots on the hand
-            for landmark in hand_landmarks:
-                x = int(landmark.x * width)
-                y = int(landmark.y * height)
-                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
 
-            # Connect the finger landmarks
-            connections = [
-                (0, 1), (1, 2), (2, 3), (3, 4),
-                (0, 5), (5, 6), (6, 7), (7, 8),
-                (0, 9), (9, 10), (10, 11), (11, 12),
-                (0, 13), (13, 14), (14, 15), (15, 16),
-                (0, 17), (17, 18), (18, 19), (19, 20),
-                (5, 9), (9, 13), (13, 17)
-            ]
+            result = landmarker.detect(mp_image)
 
-            for start, end in connections:
-                x1 = int(hand_landmarks[start].x * width)
-                y1 = int(hand_landmarks[start].y * height)
-                x2 = int(hand_landmarks[end].x * width)
-                y2 = int(hand_landmarks[end].y * height)
+            fingers_up = None
+            candidate_command = None
 
-                cv2.line(
-                    frame, (x1, y1), (x2, y2),
-                    (0, 255, 0), 2
+            if result.hand_landmarks:
+                landmarks = result.hand_landmarks[0]
+                draw_hand(frame, landmarks)
+
+                fingers_up = count_fingers(landmarks)
+                candidate_command = get_command(fingers_up)
+
+                # Accept a command only after consecutive matching frames
+                recent_commands.append(candidate_command)
+
+                if (
+                    len(recent_commands) == STABLE_FRAMES
+                    and all(
+                        item == recent_commands[0]
+                        for item in recent_commands
+                    )
+                ):
+                    active_command = recent_commands[0]
+
+                cv2.putText(
+                    frame,
+                    "Hand Detected!",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2
                 )
 
-    cv2.imshow("Hand Gesture Robot", frame)
+                cv2.putText(
+                    frame,
+                    f"Fingers: {fingers_up}",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (255, 255, 0),
+                    2
+                )
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+                cv2.putText(
+                    frame,
+                    f"Candidate: {candidate_command}",
+                    (20, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 200, 0),
+                    2
+                )
 
-camera.release()
-detector.close()
-cv2.destroyAllWindows()
+            else:
+                # Fail safe: missing hand means STOP immediately
+                recent_commands.clear()
+                active_command = "STOP"
+
+                cv2.putText(
+                    frame,
+                    "No Hand - STOP",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2
+                )
+
+            arduino_command = COMMAND_CODES[active_command]
+            robot.send_command(arduino_command)
+
+            cv2.putText(
+                frame,
+                f"Active: {active_command}",
+                (20, 165),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Arduino code: {arduino_command}",
+                (20, 205),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 0),
+                2
+            )
+
+            cv2.imshow(
+                "Hand Gesture Controlled Robot",
+                frame
+            )
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+    except (RuntimeError, OSError) as error:
+        print(f"ERROR: {error}")
+
+    finally:
+        robot.disconnect()
+
+        if camera is not None:
+            camera.release()
+
+        cv2.destroyAllWindows()
+        landmarker.close()
+        print("Program stopped.")
+
+
+if __name__ == "__main__":
+    main()
