@@ -1,124 +1,82 @@
-// Hand Gesture Controlled Robot
-// 2WD Robot - Arduino UNO
-// Commands received through Serial:
-// F = Forward
-// B = Backward
-// L = Left
-// R = Right
-// S = Stop
 
-// Motor A
-#define ENA 5
-#define IN1 8
-#define IN2 9
+const int IA_A = 5;
+const int IB_A = 6;
+const int IA_B = 9;
+const int IB_B = 10;
+int led_r =12;
+int led_b =3;
 
-// Motor B
-#define ENB 6
-#define IN3 10
-#define IN4 11
-
-int motorSpeed = 180;
+void stopMotors() {
+  digitalWrite(IA_A, LOW);
+  digitalWrite(IB_A, LOW);
+  digitalWrite(IA_B, LOW);
+  digitalWrite(IB_B, LOW);
+}
 
 void setup() {
-  pinMode(ENA, OUTPUT);
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-
-  pinMode(ENB, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
-
   Serial.begin(9600);
 
-  stopRobot();
+  pinMode(IA_A, OUTPUT);
+  pinMode(IB_A, OUTPUT);
+  pinMode(IA_B, OUTPUT);
+  pinMode(IB_B, OUTPUT);
+  pinMode(led_r,OUTPUT);
+  pinMode(led_b, OUTPUT);
 
-  Serial.println("Robot ready!");
+
+  stopMotors();
 }
 
 void loop() {
-
   if (Serial.available() > 0) {
-
     char command = Serial.read();
 
+    // Forward
     if (command == 'F') {
-      forward();
+      digitalWrite(IA_A, HIGH);
+      digitalWrite(IB_A, LOW);
+      digitalWrite(IA_B, HIGH);
+      digitalWrite(IB_B, LOW);
+      digitalWrite(led_b, HIGH);
+      digitalWrite(led_r, HIGH);
     }
 
+    // Backward
     else if (command == 'B') {
-      backward();
+      digitalWrite(IA_A, LOW);
+      digitalWrite(IB_A, HIGH);
+      digitalWrite(IA_B, LOW);
+      digitalWrite(IB_B, HIGH);
+      digitalWrite(led_b, LOW);
+      digitalWrite(led_r, LOW);
     }
 
+    // Left
     else if (command == 'L') {
-      left();
+      digitalWrite(IA_A, LOW);
+      digitalWrite(IB_A, HIGH);
+      digitalWrite(IA_B, HIGH);
+      digitalWrite(IB_B, LOW);
+      digitalWrite(led_r, HIGH);
+      digitalWrite(led_b, LOW);
+
     }
 
+    // Right
     else if (command == 'R') {
-      right();
+      digitalWrite(IA_A, HIGH);
+      digitalWrite(IB_A, LOW);
+      digitalWrite(IA_B, LOW);
+      digitalWrite(IB_B, HIGH);
+      digitalWrite(led_b, HIGH);
+      digitalWrite(led_r, LOW);
     }
 
+    // Stop
     else if (command == 'S') {
-      stopRobot();
+      digitalWrite(led_r, LOW);
+      digitalWrite(led_b, LOW);
+      stopMotors();
     }
   }
-}
-
-// ---------- MOVEMENT FUNCTIONS ----------
-
-void forward() {
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
-
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-}
-
-void backward() {
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
-
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-}
-
-void left() {
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
-
-  // Left motor backward
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-
-  // Right motor forward
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-}
-
-void right() {
-  analogWrite(ENA, motorSpeed);
-  analogWrite(ENB, motorSpeed);
-
-  // Left motor forward
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-
-  // Right motor backward
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-}
-
-void stopRobot() {
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
 }
